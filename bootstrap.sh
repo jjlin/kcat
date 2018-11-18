@@ -8,9 +8,19 @@
 # While this might not be the preferred method of building kafkacat, it
 # is the easiest and quickest way.
 #
+LIBRDKAFKA_VERSION=master
+LIBYAJL_VERSION=master
+
+if [[ $# -ne 0 ]]; then
+    if [[ $# -eq 1 && -r $1 ]]; then
+        source "$1"
+    else
+        echo "$0 [build-config-file]"
+        exit 1
+    fi
+fi
 
 set -o errexit -o nounset -o pipefail
-
 
 function github_download {
     repo=$1
@@ -25,7 +35,7 @@ function github_download {
     fi
 
     echo "Downloading $url to $dir"
-    if which wget 2>&1 > /dev/null; then
+    if which wget > /dev/null 2>&1; then
         DL='wget -q -O-'
     else
         DL='curl -s -L'
@@ -38,9 +48,8 @@ function github_download {
 }
 
 function build {
-    dir=$1
-    cmds=$2
-
+    local dir=$1
+    local cmds=$2
 
     echo "Building $dir"
     pushd $dir > /dev/null
@@ -60,7 +69,7 @@ function build {
 }
 
 function pkg_cfg_lib {
-    pkg=$1
+    local pkg=$1
 
     local libs=$(PKG_CONFIG_PATH=tmp-bootstrap/usr/local/lib/pkgconfig pkg-config --libs --static $pkg)
 
@@ -80,13 +89,11 @@ function pkg_cfg_lib {
 mkdir -p tmp-bootstrap
 pushd tmp-bootstrap > /dev/null
 
-github_download "edenhill/librdkafka" "master" "librdkafka"
-github_download "lloyd/yajl" "master" "libyajl"
+github_download "edenhill/librdkafka" "${LIBRDKAFKA_VERSION}" "librdkafka"
+github_download "lloyd/yajl" "${LIBYAJL_VERSION}" "libyajl"
 
 build librdkafka "([ -f config.h ] || ./configure) && make && make DESTDIR=\"${PWD}/\" install" || (echo "Failed to build librdkafka: bootstrap failed" ; false)
-
 build libyajl "([ -f config.h ] || ./configure) && make && make DESTDIR=\"${PWD}/\" install" || (echo "Failed to build libyajl: JSON support will probably be disabled" ; true)
-
 
 popd > /dev/null
 

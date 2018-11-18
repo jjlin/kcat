@@ -6,9 +6,42 @@ os:
   - linux
   - osx
 
+# Enable Docker.
+sudo: required
+services:
+  - docker
+
 script:
   ./bootstrap.sh
 
 before_install:
-  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then sudo apt-get update -qq && sudo apt-get install -y libssl-dev libsasl2-dev ; fi
-  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then brew update && brew install openssl ; fi
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then
+      sudo apt-get update -qq && sudo apt-get install -y libssl-dev libsasl2-dev;
+    fi
+  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then
+      brew update && brew install openssl;
+    fi
+
+before_deploy:
+  - if [[ "$TRAVIS_OS_NAME" == "linux" && "$CC" == "gcc" ]]; then
+      ./build/docker-build-release.sh CentOS 6;
+      ./build/docker-build-release.sh CentOS 7;
+      ./build/docker-build-release.sh Debian 8;
+      ./build/docker-build-release.sh Debian 9;
+      ./build/docker-build-release.sh Ubuntu 14.04;
+      ./build/docker-build-release.sh Ubuntu 16.04;
+      ./build/docker-build-release.sh Ubuntu 18.04;
+    fi
+
+# Docs: <https://docs.travis-ci.com/user/deployment/releases/>
+deploy:
+  provider: releases
+  on:
+    repo: jjlin/kafkacat
+    tags: true
+  file_glob: true
+  file: kafkacat-*
+  overwrite: true
+  skip_cleanup: true
+  api_key:
+    secure: xF18YKQUScbYs3plzb5nIB0xoHaYIEcpEbFw9esJ5pPBLjEmrQd3BT3y1cvgjwQNWtfpY91KAJkb+UVwHNJhGo0eF2Buvyf6XaaxwICs8fBtsMI38iAEyX4zTLauYpVANNS8POvtDAVT/tJyEmZ1UG7+oqrGU6PVREhksW5vKdyuoiSEkkLKKcT8y/oqYve6oeIbkCSwTvJ4rekh8rr1vM4p0m6c4DIw4xD7VrPEPAzXtLVqNAUgn29V7X9WPw8eiIt1XAlTAaVxXHC/B9NofaFt07e6fjcLASd5hVlpn2Q5tIExVFLzNx2ksLzpuoMTqDNWC+xfbNCKJNU5SRYaMyshBuk9gIISf0gqmX0bUKjxpa8E2fjGfu5WbY272AEfl95SJS5joBAjrj6qxFJj+NsN1v5YBAsdW6XGrR7PoAtg56HPAYLb5McHsa8wuSzClAIqg90T0XKVk/BDd3CuOCsllSfIv6xKMZIveGuso3CiyfJBS0J0QhDB3QBQQjSCxtFaWRVdGCJEoGNlyZYPDftlQ1nr9BDLakFnRwjyFGNK2m9pN978oJyi5BmPA6gb39mNI6jrQceuhNGiqwhcgXPTiU9bNQCR6v/7d86yX0Y0z8no4pAoMOlzPz+mt4DUEI/0127zSqnkuYTqWssj7WWAw8TjR3NctD7iCbuQ1Bg=
