@@ -65,6 +65,19 @@ dependencies.
     ./bootstrap.sh
 
 
+# Configuration
+
+Any librdkafka [configuration](https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md)
+property can be set on the command line using `-X property=value`, or in
+a configuration file specified by `-F <config-file>`.
+
+If no configuration file was specified with `-F ..` on the command line,
+kafkacat will try the `$KAFKACAT_CONFIG` environment variable,
+and then the default configuration file `~/.config/kafkacat.conf`.
+
+Configuration files are optional.
+
+
 # Examples
 
 High-level balanced KafkaConsumer: subscribe to topic1 and topic2
@@ -115,8 +128,15 @@ Produce a tombstone (a "delete" for compacted topics) for key "abc" by providing
 
     $ echo "abc:" | kafkacat -b mybroker -t mytopic -Z -K:
 
+Produce with headers:
 
-Metadata listing
+    $ echo "hello there" | kafkacat -b mybroker -H "header1=header value" -H "nullheader" -H "emptyheader=" -H "header1=duplicateIsOk"
+
+Print headers in consumer:
+
+    $ kafkacat -b mybroker -C -t mytopic -f 'Headers: %h: Message value: %s\n'
+
+Metadata listing:
 
 ````
 $ kafkacat -L -b mybroker

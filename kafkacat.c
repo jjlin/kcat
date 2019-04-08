@@ -59,7 +59,6 @@ struct conf conf = {
         .msg_size = 1024*1024,
         .null_str = "NULL",
         .fixed_key = NULL,
-        .flags = CONF_F_NO_CONF_SEARCH,
 };
 
 static struct stats {
@@ -154,6 +153,11 @@ static void dr_msg_cb (rd_kafka_t *rk, const rd_kafka_message_t *rkmessage,
  */
 static void produce (void *buf, size_t len,
                      const void *key, size_t key_len, int msgflags) {
+        rd_kafka_headers_t *hdrs = NULL;
+
+        /* Headers are freed on successful producev(), pass a copy. */
+        if (conf.headers)
+                hdrs = rd_kafka_headers_copy(conf.headers);
 
         /* Produce message: keep trying until it succeeds. */
         do {
@@ -163,8 +167,17 @@ static void produce (void *buf, size_t len,
                         KC_FATAL("Program terminated while "
                               "producing message of %zd bytes", len);
 
-                if (rd_kafka_produce(conf.rkt, conf.partition, msgflags,
-                                     buf, len, key, key_len, NULL) != -1) {
+                err = rd_kafka_producev(
+                        conf.rk,
+                        RD_KAFKA_V_RKT(conf.rkt),
+                        RD_KAFKA_V_PARTITION(conf.partition),
+                        RD_KAFKA_V_MSGFLAGS(msgflags),
+                        RD_KAFKA_V_VALUE(buf, len),
+                        RD_KAFKA_V_KEY(key, key_len),
+                        RD_KAFKA_V_HEADERS(hdrs),
+                        RD_KAFKA_V_END);
+
+                if (!err) {
                         stats.tx++;
                         break;
                 }
@@ -939,6 +952,8 @@ static void RD_NORETURN usage (const char *argv0, int exitcode,
                 "                     file format is \"property=value\".\n"
                 "                     The KAFKACAT_CONFIG=path environment can "
                 "also be used, but -F takes preceedence.\n"
+                "                     The default configuration file is "
+                "$HOME/.config/kafkacat.conf\n"
                 "  -X list            List available librdkafka configuration "
                 "properties\n"
                 "  -X prop=val        Set librdkafka configuration property.\n"
@@ -960,6 +975,8 @@ static void RD_NORETURN usage (const char *argv0, int exitcode,
                 "  -k <str>           Use a fixed key for all messages.\n"
                 "                     If combined with -K, per-message keys\n"
                 "                     takes precendence.\n"
+                "  -H <header=value>  Add Message Headers "
+                "(may be specified multiple times)\n"
                 "  -l                 Send messages from a file separated by\n"
                 "                     delimiter, as with stdin.\n"
                 "                     (only one file allowed)\n"
@@ -1068,7 +1085,23 @@ static void term (int sig) {
  */
 static void error_cb (rd_kafka_t *rk, int err,
                       const char *reason, void *opaque) {
+#if RD_KAFKA_VERSION >= 0x01000000
+        if (err == RD_KAFKA_RESP_ERR__FATAL) {
+                /* A fatal error has been raised, extract the
+                 * underlying error, and start graceful termination -
+                 * this to make sure producer delivery reports are
+                 * handled before exiting. */
+                char fatal_errstr[512];
+                rd_kafka_resp_err_t fatal_err;
 
+                fatal_err = rd_kafka_fatal_error(rk, fatal_errstr,
+                                           sizeof(fatal_errstr));
+                KC_INFO(0, "FATAL CLIENT ERROR: %s: %s: terminating\n",
+                        rd_kafka_err2str(fatal_err), fatal_errstr);
+                conf.run = 0;
+
+        } else
+#endif
         if (err == RD_KAFKA_RESP_ERR__ALL_BROKERS_DOWN) {
                 KC_ERROR("%s: %s", rd_kafka_err2str(err),
                          reason ? reason : "");
@@ -1176,6 +1209,11 @@ static int try_conf_set (const char *name, const char *val,
                                               strlen("topic."),
                                               val,
                                               errstr, errstr_size);
+        else
+                /* If no "topic." prefix, try the topic config first. */
+                res = rd_kafka_topic_conf_set(conf.rkt_conf,
+                                              name, val,
+                                              errstr, errstr_size);
 
         if (res == RD_KAFKA_CONF_UNKNOWN)
                 res = rd_kafka_conf_set(conf.rk_conf, name, val,
@@ -1253,8 +1291,7 @@ static int read_conf_file (const char *path, int fatal) {
                 return -1;
         }
 
-        if (!fatal)
-                KC_INFO(1, "Reading configuration from file %s\n", path);
+        KC_INFO(fatal ? 1 : 3, "Reading configuration from file %s\n", path);
 
         while (fgets(buf, sizeof(buf), fp)) {
                 char *s = buf;
@@ -1348,10 +1385,37 @@ static void read_default_conf_files (void) {
         if (!(home = kc_getenv("HOME")))
                 return;
 
-        snprintf(path, sizeof(path), "%s/.ccloud/config", home);
+        snprintf(path, sizeof(path), "%s/.config/kafkacat.conf", home);
 
         read_conf_file(path, 0/*not fatal*/);
 }
+
+/**
+ * @brief Add a single header specified as a command line option.
+ *
+ * @param inp "name=value" or "name" formatted header
+ */
+static void add_header (const char *inp) {
+        const char *t;
+        rd_kafka_resp_err_t err;
+
+        t = strchr(inp, '=');
+        if (t == inp || !*inp)
+                KC_FATAL("Expected -H \"name=value..\" or -H \"name\"");
+
+        if (!conf.headers)
+                conf.headers = rd_kafka_headers_new(8);
+
+
+        err = rd_kafka_header_add(conf.headers,
+                                  inp,
+                                  t ? (ssize_t)(t-inp) : -1,
+                                  t ? t+1 : NULL, -1);
+        if (err)
+                KC_FATAL("Failed to add header \"%s\": %s",
+                         inp, rd_kafka_err2str(err));
+}
+
 
 /**
  * Parse command line arguments
@@ -1368,7 +1432,7 @@ static void argparse (int argc, char **argv,
         int conf_files_read = 0;
 
         while ((opt = getopt(argc, argv,
-                             "PCG:LQt:p:b:z:o:eED:K:k:Od:qvF:X:c:Tuf:ZlVh"
+                             "PCG:LQt:p:b:z:o:eED:K:k:H:Od:qvF:X:c:Tuf:ZlVh"
 #if ENABLE_JSON
                              "J"
 #endif
@@ -1451,6 +1515,9 @@ static void argparse (int argc, char **argv,
                 case 'k':
                         conf.fixed_key = optarg;
                         conf.fixed_key_len = (size_t)(strlen(conf.fixed_key));
+                        break;
+                case 'H':
+                        add_header(optarg);
                         break;
                 case 'l':
                         conf.flags |= CONF_F_LINE;
@@ -1587,6 +1654,10 @@ static void argparse (int argc, char **argv,
 
 
         if (strchr("GC", conf.mode)) {
+                /* Must be explicitly enabled for librdkafka >= v1.0.0 */
+                rd_kafka_conf_set(conf.rk_conf, "enable.partition.eof", "true",
+                                  NULL, 0);
+
                 if (!fmt) {
                         if ((conf.flags & CONF_F_FMT_JSON)) {
                                 /* For JSON the format string is simply the
@@ -1714,6 +1785,9 @@ int main (int argc, char **argv) {
                 usage(argv[0], 0, NULL, 0);
                 break;
         }
+
+        if (conf.headers)
+                rd_kafka_headers_destroy(conf.headers);
 
         if (in != stdin)
                 fclose(in);
