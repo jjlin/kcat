@@ -1075,6 +1075,11 @@ static void RD_NORETURN usage (const char *argv0, int exitcode,
 #if ENABLE_JSON
                 "  -J                 Output with JSON envelope\n"
 #endif
+                "  -S key=<serdes>    Serialize non-NULL keys using <serdes>.\n"
+                "  -S value=<serdes>  Serialize non-NULL values using <serdes>.\n"
+                "  -S <serdes>        Serialize non-NULL keys and values using <serdes>.\n"
+                "                     Available serializers (<serdes>):\n"
+                "                       base64     - Base64 encode \n"
                 "  -s key=<serdes>    Deserialize non-NULL keys using <serdes>.\n"
                 "  -s value=<serdes>  Deserialize non-NULL values using <serdes>.\n"
                 "  -s <serdes>        Deserialize non-NULL keys and values using <serdes>.\n"
@@ -1110,7 +1115,7 @@ static void RD_NORETURN usage (const char *argv0, int exitcode,
                 "  -O                 Print message offset using -K delimiter\n"
                 "  -c <cnt>           Exit after consuming this number "
                 "of messages\n"
-                "  -Z                 Print NULL values and keys as \"%s\""
+                "  -Z                 Print NULL values and keys as \"%s\" "
                 "instead of empty.\n"
                 "                     For JSON (-J) the nullstr is always null.\n"
                 "  -u                 Unbuffered output\n"
@@ -1573,7 +1578,7 @@ static void argparse (int argc, char **argv,
 
         while ((opt = getopt(argc, argv,
                              ":PCG:LQt:p:b:z:o:eED:K:k:H:Od:qvF:X:c:Tuf:ZlVh"
-                             "s:r:J")) != -1) {
+                             "S:s:r:J")) != -1) {
                 switch (opt) {
                 case 'P':
                 case 'C':
@@ -1653,7 +1658,30 @@ static void argparse (int argc, char **argv,
                         KC_FATAL("This build of kafkacat lacks JSON support");
 #endif
                         break;
+                case 'S':
+                {
+                        int field = -1;
+                        const char *t = optarg;
 
+                        if (!strncmp(t, "key=", strlen("key="))) {
+                                t += strlen("key=");
+                                field = KC_MSG_FIELD_KEY;
+                        } else if (!strncmp(t, "value=", strlen("value="))) {
+                                t += strlen("value=");
+                                field = KC_MSG_FIELD_VALUE;
+                        }
+
+                        if (field == -1 || field == KC_MSG_FIELD_KEY) {
+                                if (!strcmp(t, "base64"))
+                                        conf.pack[KC_MSG_FIELD_KEY] = t;
+                        }
+
+                        if (field == -1 || field == KC_MSG_FIELD_VALUE) {
+                                if (!strcmp(t, "base64"))
+                                        conf.pack[KC_MSG_FIELD_VALUE] = t;
+                        }
+                }
+                break;
                 case 's':
                 {
                         int field = -1;
@@ -1683,7 +1711,7 @@ static void argparse (int argc, char **argv,
                 case 'r':
 #if ENABLE_AVRO
                         if (!*optarg)
-                                KC_FATAL("-s url must not be empty");
+                                KC_FATAL("-r url must not be empty");
                         conf.schema_registry_url = optarg;
 #else
                         KC_FATAL("This build of kafkacat lacks "
@@ -1850,7 +1878,15 @@ static void argparse (int argc, char **argv,
                 if (!strchr("GC", conf.mode))
                         KC_FATAL("-s serdes only available in the consumer");
 
-                if (conf.pack[i] && !strcmp(conf.pack[i], "avro")) {
+                if (!strcmp(conf.pack[i], "base64")) {
+                        if (i == KC_MSG_FIELD_VALUE)
+                                conf.flags |= CONF_F_FMT_BASE64_VALUE;
+                        else if (i == KC_MSG_FIELD_KEY)
+                                conf.flags |= CONF_F_FMT_BASE64_KEY;
+                        continue;
+                }
+
+                if (!strcmp(conf.pack[i], "avro")) {
 #if !ENABLE_AVRO
                         KC_FATAL("This build of kafkacat lacks "
                                  "Avro/Schema-Registry support");
