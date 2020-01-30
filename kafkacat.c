@@ -49,6 +49,7 @@
 
 
 #include "kafkacat.h"
+#include "base64.h"
 
 
 struct conf conf = {
@@ -333,6 +334,22 @@ static void producer_run (FILE *fp, char **paths, int pathcnt) {
                         if (len == 0)
                                 continue;
 
+                        /* Shave off newline */
+                        if (buf[len-1] == '\n') {
+                                len--;
+                        }
+
+                        if (len == 0)
+                                continue;
+
+                        /* Shave off carriage return */
+                        if (buf[len-1] == '\r') {
+                                len--;
+                        }
+
+                        if (len == 0)
+                                continue;
+
                         /* Shave off delimiter */
                         if ((int)buf[len-1] == conf.delim)
                                 len--;
@@ -387,8 +404,38 @@ static void producer_run (FILE *fp, char **paths, int pathcnt) {
                                 msgflags |= RD_KAFKA_MSG_F_COPY;
                         }
 
+                        /* Deserialise key & value if needed. */
+                        char* deser_key = key;
+                        size_t deser_key_len = key_len;
+
+                        if (conf.flags & CONF_F_FMT_BASE64_KEY && key_len > 0) {
+                                deser_key = base64_decode(key, key_len, &deser_key_len);
+                                if (!deser_key) {
+                                        KC_FATAL("Failed to allocate base64 output buffer for key\n");
+                                }
+                        }
+
+                        char* deser_buf = buf;
+                        size_t deser_len = len;
+
+                        if (conf.flags & CONF_F_FMT_BASE64_VALUE && len > 0) {
+                                deser_buf = base64_decode(buf, len, &deser_len);
+                                if (!deser_buf) {
+                                        KC_FATAL("Failed to allocate base64 output buffer for value\n");
+                                }
+                        }
+
                         /* Produce message */
-                        produce(buf, len, key, key_len, msgflags);
+                        produce(deser_buf, deser_len, deser_key, deser_key_len, msgflags);
+
+                        /* Free deserialized key & value if needed. */
+                        if (conf.flags & CONF_F_FMT_BASE64_KEY) {
+                                free(deser_key);
+                        }
+
+                        if (conf.flags & CONF_F_FMT_BASE64_VALUE) {
+                                free(deser_buf);
+                        }
 
                         if (conf.flags & CONF_F_TEE &&
                             fwrite(sbuf, orig_len, 1, stdout) != 1)
@@ -1875,9 +1922,6 @@ static void argparse (int argc, char **argv,
                 if (!conf.pack[i])
                         continue;
 
-                if (!strchr("GC", conf.mode))
-                        KC_FATAL("-s serdes only available in the consumer");
-
                 if (!strcmp(conf.pack[i], "base64")) {
                         if (i == KC_MSG_FIELD_VALUE)
                                 conf.flags |= CONF_F_FMT_BASE64_VALUE;
@@ -1885,6 +1929,9 @@ static void argparse (int argc, char **argv,
                                 conf.flags |= CONF_F_FMT_BASE64_KEY;
                         continue;
                 }
+
+                if (!strchr("GC", conf.mode))
+                        KC_FATAL("-s serdes only available in the consumer");
 
                 if (!strcmp(conf.pack[i], "avro")) {
 #if !ENABLE_AVRO
